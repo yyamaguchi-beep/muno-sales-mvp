@@ -5,8 +5,8 @@ const PORT = process.env.PORT || 3000;
 
 const APP_BASE_URL = process.env.APP_BASE_URL || "";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
-const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET || "";
-const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
+const LINE_CHANNEL_SECRET = 00e0e6b87bebb180a0535568e8c26daa|| "";
+const LINE_CHANNEL_ACCESS_TOKEN = 7ZfuEf8PyHn2o94hn8rrNzXlYUjLLXS+mBtbHch5YlUZRVFLCU5LCIkMn2UmiqQ65NVQ6oOtsc5jy0X/X/BusPPMzVurL5HMrL6X4N+qFfVOeesbCf5y7pmgbhn/v/B4enKxFYWan6tprDoVsgBhBAdB04t89/1O/w1cDnyilFU=|| "";
 
 function sendJson(res, statusCode, data) {
   res.writeHead(statusCode, {
