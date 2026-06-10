@@ -24,9 +24,11 @@ function sendHtml(res, statusCode, html) {
 
 async function readBody(req) {
   const chunks = [];
+
   for await (const chunk of req) {
     chunks.push(chunk);
   }
+
   return Buffer.concat(chunks);
 }
 
@@ -142,15 +144,33 @@ const server = http.createServer(async (req, res) => {
       const rawBody = await readBody(req);
       const signature = req.headers["x-line-signature"];
 
+      let payload = {};
+
+      try {
+        payload = rawBody.length ? JSON.parse(rawBody.toString("utf8")) : {};
+      } catch (error) {
+        console.error("Invalid JSON body:", error);
+        return sendJson(res, 400, {
+          ok: false,
+          error: "Invalid JSON body",
+        });
+      }
+
+      const events = payload.events || [];
+
+      if (events.length === 0) {
+        return sendJson(res, 200, {
+          ok: true,
+          message: "Webhook verification received",
+        });
+      }
+
       if (!verifyLineSignature(rawBody, signature)) {
         return sendJson(res, 401, {
           ok: false,
           error: "Invalid LINE signature",
         });
       }
-
-      const payload = rawBody.length ? JSON.parse(rawBody.toString("utf8")) : {};
-      const events = payload.events || [];
 
       for (const event of events) {
         if (event.type === "message" && event.message?.type === "text") {
