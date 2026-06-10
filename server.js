@@ -2,11 +2,11 @@ import http from "node:http";
 import crypto from "node:crypto";
 
 const PORT = process.env.PORT || 3000;
-
 const APP_BASE_URL = process.env.APP_BASE_URL || "";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
-const LINE_CHANNEL_SECRET = 00e0e6b87bebb180a0535568e8c26daa|| "";
-const LINE_CHANNEL_ACCESS_TOKEN = 7ZfuEf8PyHn2o94hn8rrNzXlYUjLLXS+mBtbHch5YlUZRVFLCU5LCIkMn2UmiqQ65NVQ6oOtsc5jy0X/X/BusPPMzVurL5HMrL6X4N+qFfVOeesbCf5y7pmgbhn/v/B4enKxFYWan6tprDoVsgBhBAdB04t89/1O/w1cDnyilFU=|| "";
+const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET || "";
+const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
+
+const reports = [];
 
 function sendJson(res, statusCode, data) {
   res.writeHead(statusCode, {
@@ -24,16 +24,15 @@ function sendHtml(res, statusCode, html) {
 
 async function readBody(req) {
   const chunks = [];
-
   for await (const chunk of req) {
     chunks.push(chunk);
   }
-
   return Buffer.concat(chunks);
 }
 
 function verifyLineSignature(rawBody, signature) {
   if (!LINE_CHANNEL_SECRET) return true;
+  if (!signature) return false;
 
   const hash = crypto
     .createHmac("sha256", LINE_CHANNEL_SECRET)
@@ -72,8 +71,6 @@ async function replyLine(replyToken, text) {
   }
 }
 
-const reports = [];
-
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -89,38 +86,13 @@ const server = http.createServer(async (req, res) => {
             <meta charset="utf-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1" />
             <title>muno-sales-mvp</title>
-            <style>
-              body {
-                font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-                background: #f7f7f7;
-                margin: 0;
-                padding: 40px;
-                color: #111;
-              }
-              .card {
-                max-width: 760px;
-                margin: 0 auto;
-                background: #fff;
-                border-radius: 16px;
-                padding: 32px;
-                box-shadow: 0 10px 30px rgba(0,0,0,.08);
-              }
-              h1 { margin-top: 0; }
-              code {
-                background: #eee;
-                padding: 2px 6px;
-                border-radius: 6px;
-              }
-            </style>
           </head>
-          <body>
-            <div class="card">
-              <h1>muno-sales-mvp</h1>
-              <p>Render deployment is running.</p>
-              <p>Health check: <code>/health</code></p>
-              <p>LINE Webhook: <code>/api/line/webhook</code></p>
-              <p>APP_BASE_URL: <code>${APP_BASE_URL || "not set"}</code></p>
-            </div>
+          <body style="font-family: sans-serif; padding: 40px;">
+            <h1>muno-sales-mvp</h1>
+            <p>Render deployment is running.</p>
+            <p>Health check: /health</p>
+            <p>LINE Webhook: /api/line/webhook</p>
+            <p>APP_BASE_URL: ${APP_BASE_URL || "not set"}</p>
           </body>
         </html>
         `
@@ -146,51 +118,20 @@ const server = http.createServer(async (req, res) => {
             <meta charset="utf-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1" />
             <title>Sales Reports</title>
-            <style>
-              body {
-                font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-                background: #f7f7f7;
-                margin: 0;
-                padding: 32px;
-                color: #111;
-              }
-              .wrap {
-                max-width: 960px;
-                margin: 0 auto;
-              }
-              .card {
-                background: #fff;
-                border-radius: 16px;
-                padding: 24px;
-                box-shadow: 0 10px 30px rgba(0,0,0,.08);
-                margin-bottom: 16px;
-              }
-              pre {
-                white-space: pre-wrap;
-                word-break: break-word;
-                background: #f1f1f1;
-                padding: 16px;
-                border-radius: 12px;
-              }
-            </style>
           </head>
-          <body>
-            <div class="wrap">
-              <h1>Sales Reports</h1>
-              <div class="card">
-                <p>保存件数：${reports.length}</p>
-              </div>
-              ${reports
-                .map(
-                  (r) => `
-                  <div class="card">
-                    <strong>${r.createdAt}</strong>
-                    <pre>${JSON.stringify(r, null, 2)}</pre>
+          <body style="font-family: sans-serif; padding: 40px;">
+            <h1>Sales Reports</h1>
+            <p>保存件数：${reports.length}</p>
+            ${reports
+              .map(
+                (report) => `
+                  <div style="border:1px solid #ddd; padding:16px; margin:16px 0;">
+                    <strong>${report.createdAt}</strong>
+                    <pre>${JSON.stringify(report, null, 2)}</pre>
                   </div>
                 `
-                )
-                .join("")}
-            </div>
+              )
+              .join("")}
           </body>
         </html>
         `
@@ -208,8 +149,7 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      const bodyText = rawBody.toString("utf8");
-      const payload = bodyText ? JSON.parse(bodyText) : {};
+      const payload = rawBody.length ? JSON.parse(rawBody.toString("utf8")) : {};
       const events = payload.events || [];
 
       for (const event of events) {
@@ -237,25 +177,6 @@ const server = http.createServer(async (req, res) => {
 
       return sendJson(res, 200, {
         ok: true,
-      });
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/reports") {
-      const rawBody = await readBody(req);
-      const payload = rawBody.length ? JSON.parse(rawBody.toString("utf8")) : {};
-
-      const report = {
-        id: crypto.randomUUID(),
-        createdAt: new Date().toISOString(),
-        source: "form",
-        ...payload,
-      };
-
-      reports.push(report);
-
-      return sendJson(res, 201, {
-        ok: true,
-        report,
       });
     }
 
