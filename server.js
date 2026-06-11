@@ -1,220 +1,171 @@
 import http from "node:http";
-import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { getConfig } from "./src/config.js";
+import { JsonStore } from "./src/storage.js";
+import { readBody, parseCookies, parseForm, redirect, send, sendJson, signSession, verifySession } from "./src/http.js";
+import { verifyLineSignature, downloadLineImage, replyLine, buildLineReply } from "./src/line.js";
+import { analyzeSalesScreenshot } from "./src/openaiVision.js";
+import { approveSale, getDashboard, registerManualSale, registerScreenshotSale, updateSale, voidSale } from "./src/salesService.js";
+import { GoogleSheetsClient } from "./src/googleSheets.js";
+import { dashboardView, editSaleView, loginView, newSaleView } from "./src/views.js";
 
-const PORT = process.env.PORT || 3000;
-const APP_BASE_URL = process.env.APP_BASE_URL || "";
-const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET || "";
-const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
-
-const reports = [];
-
-function sendJson(res, statusCode, data) {
-  res.writeHead(statusCode, {
-    "Content-Type": "application/json; charset=utf-8",
-  });
-  res.end(JSON.stringify(data));
-}
-
-function sendHtml(res, statusCode, html) {
-  res.writeHead(statusCode, {
-    "Content-Type": "text/html; charset=utf-8",
-  });
-  res.end(html);
-}
-
-async function readBody(req) {
-  const chunks = [];
-
-  for await (const chunk of req) {
-    chunks.push(chunk);
-  }
-
-  return Buffer.concat(chunks);
-}
-
-function verifyLineSignature(rawBody, signature) {
-  if (!LINE_CHANNEL_SECRET) return true;
-  if (!signature) return false;
-
-  const hash = crypto
-    .createHmac("sha256", LINE_CHANNEL_SECRET)
-    .update(rawBody)
-    .digest("base64");
-
-  return hash === signature;
-}
-
-async function replyLine(replyToken, text) {
-  if (!LINE_CHANNEL_ACCESS_TOKEN) {
-    console.log("LINE_CHANNEL_ACCESS_TOKEN is not set.");
-    return;
-  }
-
-  const response = await fetch("https://api.line.me/v2/bot/message/reply", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`,
-    },
-    body: JSON.stringify({
-      replyToken,
-      messages: [
-        {
-          type: "text",
-          text,
-        },
-      ],
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error("LINE reply error:", response.status, errorText);
-  }
-}
+const rootDir = process.cwd();
+const config = getConfig(rootDir);
+const store = new JsonStore(rootDir, { dataDir: config.dataDir, uploadDir: config.uploadDir });
+await store.init();
+const sheets = new GoogleSheetsClient(config, store);
 
 const server = http.createServer(async (req, res) => {
   try {
-    const url = new URL(req.url, `http://${req.headers.host}`);
-
-    if (req.method === "GET" && url.pathname === "/") {
-      return sendHtml(
-        res,
-        200,
-        `
-        <!doctype html>
-        <html lang="ja">
-          <head>
-            <meta charset="utf-8" />
-            <meta name="viewport" content="width=device-width, initial-scale=1" />
-            <title>muno-sales-mvp</title>
-          </head>
-          <body style="font-family: sans-serif; padding: 40px;">
-            <h1>muno-sales-mvp</h1>
-            <p>Render deployment is running.</p>
-            <p>Health check: /health</p>
-            <p>LINE Webhook: /api/line/webhook</p>
-            <p>APP_BASE_URL: ${APP_BASE_URL || "not set"}</p>
-          </body>
-        </html>
-        `
-      );
-    }
+    const url = new URL(req.url, config.baseUrl || `http://${req.headers.host}`);
 
     if (req.method === "GET" && url.pathname === "/health") {
-      return sendJson(res, 200, {
-        ok: true,
-        service: "muno-sales-mvp",
-        time: new Date().toISOString(),
-      });
+      return sendJson(res, 200, { ok: true, service: "muno-sales-mvp", time: new Date().toISOString() });
     }
+    if (req.method === "GET" && url.pathname.startsWith("/public/")) return servePublic(res, url.pathname);
+    if (req.method === "POST" && url.pathname === "/api/line/webhook") return handleLineWebhook(req, res);
 
+    const session = currentSession(req);
+    if (req.method === "GET" && url.pathname === "/login") return send(res, 200, loginView(), htmlHeaders());
+    if (req.method === "POST" && url.pathname === "/login") return handleLogin(req, res);
+    if (req.method === "POST" && url.pathname === "/logout") return logout(res);
+
+    if (!session) return redirect(res, "/login");
+    if (!["owner", "manager"].includes(session.role)) return send(res, 403, "権限がありません", textHeaders());
+
+    if (req.method === "GET" && url.pathname.startsWith("/uploads/")) return serveUpload(res, url.pathname);
+    if (req.method === "GET" && url.pathname === "/") return redirect(res, "/admin");
     if (req.method === "GET" && url.pathname === "/admin") {
-      return sendHtml(
-        res,
-        200,
-        `
-        <!doctype html>
-        <html lang="ja">
-          <head>
-            <meta charset="utf-8" />
-            <meta name="viewport" content="width=device-width, initial-scale=1" />
-            <title>Sales Reports</title>
-          </head>
-          <body style="font-family: sans-serif; padding: 40px;">
-            <h1>Sales Reports</h1>
-            <p>保存件数：${reports.length}</p>
-            ${reports
-              .map(
-                (report) => `
-                  <div style="border:1px solid #ddd; padding:16px; margin:16px 0;">
-                    <strong>${report.createdAt}</strong>
-                    <pre>${JSON.stringify(report, null, 2)}</pre>
-                  </div>
-                `
-              )
-              .join("")}
-          </body>
-        </html>
-        `
-      );
+      return send(res, 200, dashboardView({ dashboard: await getDashboard(store), user: session.user }), htmlHeaders());
+    }
+    if (req.method === "GET" && url.pathname === "/admin/new") {
+      return send(res, 200, newSaleView({ user: session.user }), htmlHeaders());
+    }
+    if (req.method === "POST" && url.pathname === "/admin/new") {
+      const sale = await registerManualSale({ store, form: parseForm(await readBody(req)), actor: session.user });
+      return redirect(res, `/admin/sales/${sale.id}`);
     }
 
-    if (req.method === "POST" && url.pathname === "/api/line/webhook") {
-      const rawBody = await readBody(req);
-      const signature = req.headers["x-line-signature"];
-
-      let payload = {};
-
-      try {
-        payload = rawBody.length ? JSON.parse(rawBody.toString("utf8")) : {};
-      } catch (error) {
-        console.error("Invalid JSON body:", error);
-        return sendJson(res, 400, {
-          ok: false,
-          error: "Invalid JSON body",
-        });
-      }
-
-      const events = payload.events || [];
-
-      if (events.length === 0) {
-        return sendJson(res, 200, {
-          ok: true,
-          message: "Webhook verification received",
-        });
-      }
-
-      if (!verifyLineSignature(rawBody, signature)) {
-        return sendJson(res, 401, {
-          ok: false,
-          error: "Invalid LINE signature",
-        });
-      }
-
-      for (const event of events) {
-        if (event.type === "message" && event.message?.type === "text") {
-          const text = event.message.text;
-
-          const report = {
-            id: crypto.randomUUID(),
-            createdAt: new Date().toISOString(),
-            source: "line",
-            userId: event.source?.userId || null,
-            text,
-          };
-
-          reports.push(report);
-
-          if (event.replyToken) {
-            await replyLine(
-              event.replyToken,
-              `報告を受け付けました。\n\n内容：${text}`
-            );
-          }
-        }
-      }
-
-      return sendJson(res, 200, {
-        ok: true,
-      });
+    const saleMatch = url.pathname.match(/^\/admin\/sales\/([^/]+)$/);
+    if (req.method === "GET" && saleMatch) {
+      const db = await store.read();
+      const sale = db.sales.find((item) => item.id === saleMatch[1] && item.active !== false);
+      if (!sale) return send(res, 404, "not found", textHeaders());
+      const products = db.productSales.filter((item) => item.sale_id === sale.id);
+      return send(res, 200, editSaleView({ sale, products, user: session.user }), htmlHeaders());
     }
 
-    return sendJson(res, 404, {
-      ok: false,
-      error: "Not Found",
-    });
+    const actionMatch = url.pathname.match(/^\/admin\/sales\/([^/]+)\/(update|approve|void)$/);
+    if (req.method === "POST" && actionMatch) {
+      const [, id, action] = actionMatch;
+      if (action === "update") {
+        await updateSale({ store, id, patch: parseForm(await readBody(req)), actor: session.user });
+        return redirect(res, `/admin/sales/${id}`);
+      }
+      if (action === "approve") {
+        await approveSale({ store, id, actor: session.user, sheets });
+        return redirect(res, `/admin/sales/${id}`);
+      }
+      await voidSale({ store, id, actor: session.user });
+      return redirect(res, "/admin");
+    }
+
+    return sendJson(res, 404, { ok: false, error: "Not Found" });
   } catch (error) {
     console.error(error);
-
-    return sendJson(res, 500, {
-      ok: false,
-      error: "Internal Server Error",
-      detail: error.message,
-    });
+    return sendJson(res, 500, { ok: false, error: "Internal Server Error", detail: error.message });
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+server.listen(config.port, () => {
+  console.log(`müno sales MVP running on port ${config.port}`);
 });
+
+async function handleLineWebhook(req, res) {
+  const rawBody = await readBody(req);
+  const signature = req.headers["x-line-signature"];
+
+  let body = {};
+  try {
+    body = rawBody.length ? JSON.parse(rawBody.toString("utf8")) : {};
+  } catch {
+    return sendJson(res, 400, { ok: false, error: "Invalid JSON body" });
+  }
+
+  if ((body.events || []).length === 0) return sendJson(res, 200, { ok: true, message: "Webhook verification received" });
+  if (!verifyLineSignature(rawBody, signature, config.lineChannelSecret)) {
+    return sendJson(res, 401, { ok: false, error: "Invalid LINE signature" });
+  }
+
+  for (const event of body.events || []) {
+    if (event.type !== "message" || event.message?.type !== "image") continue;
+    try {
+      const image = await downloadLineImage(event.message.id, config);
+      const upload = await store.saveUpload(image.buffer, image.extension);
+      const sourceImageUrl = `${config.baseUrl}/uploads/${upload.fileName}`;
+      const visionResult = await analyzeSalesScreenshot({ filePath: upload.filePath, contentType: image.contentType, config });
+      const sale = await registerScreenshotSale({
+        store,
+        visionResult,
+        sourceImageUrl,
+        sourceLineUserId: event.source?.userId || ""
+      });
+      await replyLine(event.replyToken, buildLineReply(sale), config);
+    } catch (error) {
+      console.error(error);
+      await replyLine(event.replyToken, `スクショ処理に失敗しました。\n管理者に確認してください。\n${error.message}`, config).catch(console.error);
+    }
+  }
+
+  return sendJson(res, 200, { ok: true });
+}
+
+async function handleLogin(req, res) {
+  const form = parseForm(await readBody(req));
+  const user = config.users.find((item) => item.user === form.user && item.password === form.password);
+  if (!user) return send(res, 401, loginView("ログインできません。IDとパスワードを確認してください。"), htmlHeaders());
+  const token = signSession(`${user.user}|${user.role}`, config.sessionSecret);
+  res.writeHead(303, {
+    Location: "/admin",
+    "Set-Cookie": `muno_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`
+  });
+  res.end();
+}
+
+function logout(res) {
+  res.writeHead(303, {
+    Location: "/login",
+    "Set-Cookie": "muno_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"
+  });
+  res.end();
+}
+
+function currentSession(req) {
+  const value = verifySession(parseCookies(req).muno_session, config.sessionSecret);
+  if (!value) return null;
+  const [user, role = "staff"] = value.split("|");
+  return { user, role };
+}
+
+async function servePublic(res, pathname) {
+  const filePath = path.join(rootDir, "public", path.basename(pathname));
+  const body = await fs.readFile(filePath);
+  const type = filePath.endsWith(".css") ? "text/css; charset=utf-8" : "application/octet-stream";
+  return send(res, 200, body, { "Content-Type": type });
+}
+
+async function serveUpload(res, pathname) {
+  const filePath = path.join(store.uploadDir, path.basename(pathname));
+  const body = await fs.readFile(filePath);
+  const type = filePath.endsWith(".png") ? "image/png" : "image/jpeg";
+  return send(res, 200, body, { "Content-Type": type, "Cache-Control": "private, max-age=3600" });
+}
+
+function htmlHeaders() {
+  return { "Content-Type": "text/html; charset=utf-8" };
+}
+
+function textHeaders() {
+  return { "Content-Type": "text/plain; charset=utf-8" };
+}

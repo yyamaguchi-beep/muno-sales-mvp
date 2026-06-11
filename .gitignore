@@ -4,3 +4,5 @@ uploads/
 node_modules/
 .DS_Store
 npm-debug.log*
+*.log
+muno-sales-mvp-main.zip
