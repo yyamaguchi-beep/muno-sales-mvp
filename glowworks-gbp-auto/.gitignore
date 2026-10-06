@@ -1,0 +1,28 @@
+# secrets
+.env
+.env.*
+!.env.example
+*.pem
+client_secret*.json
+credentials*.json
+service-account*.json
+gcs-key*.json
+token*.json
+
+# runtime data (DB / 生成物 / ログはコミットしない)
+data/*
+!data/.gitkeep
+generated/*
+!generated/.gitkeep
+logs/*
+!logs/.gitkeep
+public-local*/
+
+# reference photos may contain real faces — commit only if you intend to
+assets/reference/*
+!assets/reference/.gitkeep
+!assets/reference/README.md
+
+node_modules/
+dist/
+.DS_Store

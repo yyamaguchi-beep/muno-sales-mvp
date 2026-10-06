@@ -1,0 +1,45 @@
+{
+  "name": "glowworks-gbp-auto",
+  "version": "1.0.0",
+  "private": true,
+  "description": "GLOW WORKS 生野 Google Business Profile 自動投稿システム",
+  "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "auth": "tsx scripts/google-auth.ts",
+    "find-location": "tsx scripts/find-location.ts",
+    "generate": "tsx src/index.ts --mode generate",
+    "dry-run": "tsx src/index.ts --mode dry-run",
+    "daily": "tsx src/index.ts --mode daily",
+    "post": "tsx src/index.ts --mode post",
+    "approve": "tsx scripts/approve.ts",
+    "test-post": "tsx scripts/test-post.ts",
+    "history": "tsx scripts/history.ts",
+    "status": "tsx scripts/status.ts",
+    "scheduler": "tsx src/scheduler.ts",
+    "cron": "tsx scripts/cron-expr.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1146.0",
+    "@google-cloud/storage": "^8.2.0",
+    "better-sqlite3": "^13.0.3",
+    "dotenv": "^18.0.5",
+    "openai": "^7.28.0",
+    "sharp": "^0.35.5",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.4",
+    "eslint": "^10.12.0",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.1"
+  }
+}

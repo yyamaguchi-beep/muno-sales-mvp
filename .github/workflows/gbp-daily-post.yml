@@ -1,0 +1,108 @@
+# GLOW WORKS 生野 — Google ビジネスプロフィール 毎日自動投稿
+#
+# GitHub Actions の cron は UTC。日本 (JST) は UTC+9 でサマータイムなし。
+#   10:30 JST = 01:30 UTC → "30 1 * * *"
+# 投稿時刻を変えた場合は `npm run cron` で UTC の cron 式を確認し、下の schedule を更新してください。
+# 2本目 (12:30 JST) はバックアップ実行です。GitHub 側の遅延・スキップや一時的な障害への保険で、
+# 当日すでに投稿済み (status=success) なら何もせず終了します (二重投稿しません)。
+name: GBP daily post
+
+on:
+  schedule:
+    - cron: "30 1 * * *"   # 10:30 JST (本実行)
+    - cron: "30 3 * * *"   # 12:30 JST (バックアップ: 投稿済みなら SKIP)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "daily = 設定どおり / dry-run = 投稿せず確認 / post = 今すぐ本番投稿 / generate = 生成のみ"
+        type: choice
+        options: [dry-run, daily, post, generate]
+        default: dry-run
+      theme:
+        description: "テーマ固定 (A〜Z、空欄で自動ローテーション)"
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+# 同時実行しない (二重投稿防止の一層目。DB と Google 側の確認でも防止している)
+concurrency:
+  group: gbp-daily-post
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: glowworks-gbp-auto
+    env:
+      TZ: Asia/Tokyo
+      # --- 切替は Settings → Secrets and variables → Actions → Variables で ---
+      DRY_RUN: ${{ vars.DRY_RUN || 'true' }}
+      AUTO_PUBLISH: ${{ vars.AUTO_PUBLISH || 'false' }}
+      IMAGE_QUALITY_PRIORITY: ${{ vars.IMAGE_QUALITY_PRIORITY || 'false' }}
+      OPENAI_TEXT_MODEL: ${{ vars.OPENAI_TEXT_MODEL }}
+      OPENAI_IMAGE_MODEL: ${{ vars.OPENAI_IMAGE_MODEL || 'gpt-image-2.5-flare' }}
+      STORAGE_PROVIDER: ${{ vars.STORAGE_PROVIDER || 'r2' }}
+      POST_HOUR: ${{ vars.POST_HOUR || '10' }}
+      POST_MINUTE: ${{ vars.POST_MINUTE || '30' }}
+      TIMEZONE: Asia/Tokyo
+      STATE_SYNC: "true"
+      AI_MOCK: "false"
+      # --- Secrets ---
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+      GBP_ACCOUNT_ID: ${{ secrets.GBP_ACCOUNT_ID }}
+      GBP_LOCATION_ID: ${{ secrets.GBP_LOCATION_ID }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+      GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+      GCS_PUBLIC_URL: ${{ secrets.GCS_PUBLIC_URL }}
+      GCS_KEY_JSON_BASE64: ${{ secrets.GCS_KEY_JSON_BASE64 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: glowworks-gbp-auto/package-lock.json
+
+      - name: Install Japanese fonts (画像への日本語合成用)
+        working-directory: .
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk > /dev/null
+
+      - run: npm ci
+
+      - name: Run (schedule)
+        if: github.event_name == 'schedule'
+        run: npm run daily -- --respect-schedule
+
+      - name: Run (manual)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          MODE: ${{ inputs.mode }}
+          THEME: ${{ inputs.theme }}
+        run: |
+          ARGS="--mode $MODE"
+          if [ -n "$THEME" ]; then ARGS="$ARGS --theme $THEME"; fi
+          npx tsx src/index.ts $ARGS
+
+      - name: Upload preview & logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gbp-post-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            glowworks-gbp-auto/generated/
+            glowworks-gbp-auto/logs/
+          retention-days: 30
+          if-no-files-found: ignore

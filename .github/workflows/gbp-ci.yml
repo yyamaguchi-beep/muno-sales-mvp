@@ -1,0 +1,34 @@
+name: GBP auto-post CI
+
+on:
+  push:
+    paths: ["glowworks-gbp-auto/**", ".github/workflows/gbp-*.yml"]
+  pull_request:
+    paths: ["glowworks-gbp-auto/**", ".github/workflows/gbp-*.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: glowworks-gbp-auto
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: glowworks-gbp-auto/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - name: Mock dry-run (OpenAI/Google を呼ばない)
+        env:
+          AI_MOCK: "true"
+          STORAGE_PROVIDER: local
+          DRY_RUN: "true"
+        run: npm run dry-run && npm run status -- --offline
